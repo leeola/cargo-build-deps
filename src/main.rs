@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::env;
 use std::process::Command;
 
-fn build_deps(is_release: bool, features: Option<&str>) {
+fn build_deps(is_release: bool, features: Option<&str>, ignore_pkg_vers: Vec<&str>) {
   let output = Command::new("cargo")
     .args(&["build", "--build-plan", "-Z", "unstable-options"])
     .output()
@@ -31,6 +31,7 @@ fn build_deps(is_release: bool, features: Option<&str>) {
       let version = env.get("CARGO_PKG_VERSION").unwrap().as_str().unwrap();
       format!("{}:{}", name, version)
     })
+    .filter(|pkg_ver| !ignore_pkg_vers.contains(&pkg_ver.as_str()))
     .collect();
 
   let mut command = Command::new("cargo");
@@ -57,11 +58,21 @@ fn main() {
         .takes_value(true)
         .long("features"),
     )
+    .arg(
+      Arg::with_name("ignore-pkg-ver")
+        .help("ignore a specific pkg:ver")
+        .takes_value(true)
+        .multiple(true)
+        .long("ignore-pkg-ver"),
+    )
     .get_matches();
 
   let features = matched_args.value_of("features");
   let is_release = matched_args.is_present("release");
-  build_deps(is_release, features);
+  let ignore_pkg_vers = matched_args
+    .values_of("ignore-pkg-ver")
+    .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
+  build_deps(is_release, features, ignore_pkg_vers);
 }
 
 fn execute_command(command: &mut Command) {
