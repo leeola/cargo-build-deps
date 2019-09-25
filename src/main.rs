@@ -6,7 +6,12 @@ use serde_json::Value;
 use std::env;
 use std::process::Command;
 
-fn build_deps(is_release: bool, features: Option<&str>, ignore_pkg_vers: Vec<&str>) {
+fn build_deps(
+  is_release: bool,
+  features: Option<&str>,
+  ignore_pkg_vers: Vec<&str>,
+  with_pkgs: Vec<&str>,
+) {
   let output = Command::new("cargo")
     .args(&["build", "--build-plan", "-Z", "unstable-options"])
     .output()
@@ -19,7 +24,7 @@ fn build_deps(is_release: bool, features: Option<&str>, ignore_pkg_vers: Vec<&st
   let cwd = env::current_dir().unwrap();
   let val: Value = serde_json::from_str(&plan).unwrap();
   let invocations = val.get("invocations").unwrap().as_array().unwrap();
-  let pkgs: Vec<String> = invocations
+  let mut pkgs: Vec<String> = invocations
     .iter()
     .filter(|&x| {
       x.get("args").unwrap().as_array().unwrap().len() != 0
@@ -33,6 +38,14 @@ fn build_deps(is_release: bool, features: Option<&str>, ignore_pkg_vers: Vec<&st
     })
     .filter(|pkg_ver| !ignore_pkg_vers.contains(&pkg_ver.as_str()))
     .collect();
+
+  // append any user included packages
+  pkgs.append(
+    &mut with_pkgs
+      .into_iter()
+      .map(|s| s.to_owned())
+      .collect::<Vec<_>>(),
+  );
 
   let mut command = Command::new("cargo");
   command.arg("build");
@@ -65,6 +78,13 @@ fn main() {
         .multiple(true)
         .long("ignore-pkg-ver"),
     )
+    .arg(
+      Arg::with_name("with-pkg")
+        .help("build the given dependency in addition to the others. Value is passed directly to `cargo build -p <WITH-PKG>`")
+        .takes_value(true)
+        .multiple(true)
+        .long("with-pkg"),
+    )
     .get_matches();
 
   let features = matched_args.value_of("features");
@@ -72,7 +92,10 @@ fn main() {
   let ignore_pkg_vers = matched_args
     .values_of("ignore-pkg-ver")
     .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
-  build_deps(is_release, features, ignore_pkg_vers);
+  let with_pkgs = matched_args
+    .values_of("with-pkg")
+    .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
+  build_deps(is_release, features, ignore_pkg_vers, with_pkgs);
 }
 
 fn execute_command(command: &mut Command) {
