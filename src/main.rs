@@ -9,6 +9,7 @@ use std::process::Command;
 fn build_deps(
   is_release: bool,
   features: Option<&str>,
+  ignore_pkg: Vec<&str>,
   ignore_pkg_vers: Vec<&str>,
   with_pkgs: Vec<&str>,
 ) {
@@ -34,8 +35,10 @@ fn build_deps(
       let env = x.get("env").unwrap().as_object().unwrap();
       let name = env.get("CARGO_PKG_NAME").unwrap().as_str().unwrap();
       let version = env.get("CARGO_PKG_VERSION").unwrap().as_str().unwrap();
-      format!("{}:{}", name, version)
+      (name, version)
     })
+    .filter(|(name, _)| !ignore_pkg.contains(name))
+    .map(|(name, version)| format!("{}:{}", name, version))
     .filter(|pkg_ver| !ignore_pkg_vers.contains(&pkg_ver.as_str()))
     .collect();
 
@@ -72,6 +75,13 @@ fn main() {
         .long("features"),
     )
     .arg(
+      Arg::with_name("ignore-pkg")
+        .help("ignore a specific pkg")
+        .takes_value(true)
+        .multiple(true)
+        .long("ignore-pkg"),
+    )
+    .arg(
       Arg::with_name("ignore-pkg-ver")
         .help("ignore a specific pkg:ver")
         .takes_value(true)
@@ -89,13 +99,16 @@ fn main() {
 
   let features = matched_args.value_of("features");
   let is_release = matched_args.is_present("release");
+  let ignore_pkg = matched_args
+    .values_of("ignore-pkg")
+    .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
   let ignore_pkg_vers = matched_args
     .values_of("ignore-pkg-ver")
     .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
   let with_pkgs = matched_args
     .values_of("with-pkg")
     .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
-  build_deps(is_release, features, ignore_pkg_vers, with_pkgs);
+  build_deps(is_release, features, ignore_pkg, ignore_pkg_vers, with_pkgs);
 }
 
 fn execute_command(command: &mut Command) {
