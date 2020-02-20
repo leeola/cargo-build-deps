@@ -7,6 +7,8 @@ use std::env;
 use std::process::Command;
 
 fn build_deps(
+    target_pkg: &str,
+    ignore_local_packages: bool,
     is_release: bool,
     features: Option<&str>,
     ignore_pkg: Vec<&str>,
@@ -14,7 +16,7 @@ fn build_deps(
     with_pkgs: Vec<&str>,
 ) {
     let output = Command::new("cargo")
-        .args(&["build", "--build-plan", "-Z", "unstable-options"])
+        .args(&["metadata", "--format-version", "1"])
         .output()
         .expect("Failed to execute");
     if !output.status.success() {
@@ -22,23 +24,58 @@ fn build_deps(
         panic!(stderr)
     }
     let plan = String::from_utf8(output.stdout).expect("Not UTF-8");
-    let cwd = env::current_dir().unwrap();
     let val: Value = serde_json::from_str(&plan).unwrap();
-    let invocations = val.get("invocations").unwrap().as_array().unwrap();
-    let mut pkgs: Vec<String> = invocations
+    let packages = val
+        .get("resolve")
+        .unwrap()
+        .get("nodes")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let (target_pkg_node, pkg_cwd) = packages
         .iter()
-        .filter(|&x| {
-            x.get("args").unwrap().as_array().unwrap().len() != 0
-                && x.get("cwd").unwrap().as_str().unwrap() != cwd.as_os_str()
+        .find_map(|node| {
+            let id = node.get("id").unwrap().as_str().unwrap();
+            let mut split = id.splitn(3, ' ');
+            let name = split.next().unwrap();
+            if name != target_pkg {
+                return None;
+            }
+            split.next();
+            let id_path_segment = split.next().expect("node id missing path");
+            // TODO: is there a use-case for non-local path+file schema?
+            let pkg_cwd = id_path_segment
+                .trim_start_matches("(path+file://")
+                .trim_end_matches(")");
+            Some((node, pkg_cwd.to_owned()))
         })
-        .map(|ref x| {
-            let env = x.get("env").unwrap().as_object().unwrap();
-            let name = env.get("CARGO_PKG_NAME").unwrap().as_str().unwrap();
-            let version = env.get("CARGO_PKG_VERSION").unwrap().as_str().unwrap();
-            (name, version)
+        .expect("missing target package");
+    let deps = target_pkg_node
+        .get("dependencies")
+        .expect("missing resolve node dependencies for target package")
+        .as_array()
+        .unwrap();
+    let mut pkgs: Vec<String> = deps
+        .iter()
+        .map(|ref id| {
+            let id = id.as_str().unwrap();
+            let mut split = id.splitn(3, ' ');
+            let name = split.next().unwrap();
+            let version = split.next().unwrap();
+            let source = split.next().unwrap();
+            (name, version, source)
         })
-        .filter(|(name, _)| !ignore_pkg.contains(name))
-        .map(|(name, version)| format!("{}:{}", name, version))
+        .filter(|(_, _, source)| {
+            if ignore_local_packages {
+                !source.starts_with("(path+file://")
+            } else {
+                true
+            }
+        })
+        // ignore any names that the caller chose to ignore
+        .filter(|(name, _, _)| !ignore_pkg.contains(name))
+        .map(|(name, version, _)| format!("{}:{}", name, version))
+        // ignore any name:version's that the caller chose to ignore
         .filter(|pkg_ver| !ignore_pkg_vers.contains(&pkg_ver.as_str()))
         .collect();
 
@@ -50,24 +87,31 @@ fn build_deps(
             .collect::<Vec<_>>(),
     );
 
-    let mut command = Command::new("cargo");
-    command.arg("build");
     for pkg in pkgs {
+        let mut command = Command::new("cargo");
+        command.current_dir(&pkg_cwd);
+        command.arg("build");
         command.arg("-p");
         command.arg(&pkg);
+        if is_release {
+            command.arg("--release");
+        }
+        if let Some(features) = features {
+            command.arg("--features").arg(features);
+        }
+        execute_command(&mut command);
     }
-    if is_release {
-        command.arg("--release");
-    }
-    if let Some(features) = features {
-        command.arg("--features").arg(features);
-    }
-    execute_command(&mut command);
 }
 
 fn main() {
     let matched_args = App::new("cargo build-deps")
     .arg(Arg::with_name("build-deps"))
+    .arg(
+      Arg::with_name("package")
+        .required(true)
+        .takes_value(true)
+    )
+    .arg(Arg::with_name("ignore-local-packages").long("ignore-local-packages"))
     .arg(Arg::with_name("release").long("release"))
     .arg(
       Arg::with_name("features")
@@ -97,7 +141,9 @@ fn main() {
     )
     .get_matches();
 
+    let package = matched_args.value_of("package").unwrap();
     let features = matched_args.value_of("features");
+    let ignore_local_packages = matched_args.is_present("ignore-local-packages");
     let is_release = matched_args.is_present("release");
     let ignore_pkg = matched_args
         .values_of("ignore-pkg")
@@ -108,7 +154,15 @@ fn main() {
     let with_pkgs = matched_args
         .values_of("with-pkg")
         .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
-    build_deps(is_release, features, ignore_pkg, ignore_pkg_vers, with_pkgs);
+    build_deps(
+        package,
+        ignore_local_packages,
+        is_release,
+        features,
+        ignore_pkg,
+        ignore_pkg_vers,
+        with_pkgs,
+    );
 }
 
 fn execute_command(command: &mut Command) {
