@@ -79,7 +79,7 @@ fn build_deps(
     );
 
     for pkg in pkgs {
-        println!("compiling {}", pkg);
+        println!("fallible compile of package: {}", pkg);
         let mut command = Command::new("cargo");
         command.envs(env::vars());
         command.current_dir(&target_cwd);
