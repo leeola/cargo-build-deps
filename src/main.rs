@@ -25,14 +25,8 @@ fn build_deps(
     }
     let plan = String::from_utf8(output.stdout).expect("Not UTF-8");
     let val: Value = serde_json::from_str(&plan).unwrap();
-    let packages = val
-        .get("resolve")
-        .unwrap()
-        .get("nodes")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    let (target_pkg_node, pkg_cwd) = packages
+    let packages = val.get("packages").unwrap().as_array().unwrap();
+    let target_cwd = packages
         .iter()
         .find_map(|node| {
             let id = node.get("id").unwrap().as_str().unwrap();
@@ -44,27 +38,24 @@ fn build_deps(
             split.next();
             let id_path_segment = split.next().expect("node id missing path");
             // TODO: is there a use-case for non-local path+file schema?
-            let pkg_cwd = id_path_segment
+            let target_cwd = id_path_segment
                 .trim_start_matches("(path+file://")
                 .trim_end_matches(")");
-            Some((node, pkg_cwd.to_owned()))
+            Some(target_cwd.to_owned())
         })
         .expect("missing target package");
-    let deps = target_pkg_node
-        .get("dependencies")
-        .expect("missing resolve node dependencies for target package")
-        .as_array()
-        .unwrap();
-    let mut pkgs: Vec<String> = deps
+    let mut pkgs: Vec<String> = packages
         .iter()
-        .map(|ref id| {
-            let id = id.as_str().unwrap();
+        .map(|package| {
+            let id = package.get("id").unwrap().as_str().unwrap();
             let mut split = id.splitn(3, ' ');
             let name = split.next().unwrap();
             let version = split.next().unwrap();
             let source = split.next().unwrap();
             (name, version, source)
         })
+        // ignore self
+        .filter(|(name, _, _)| *name != target_pkg)
         .filter(|(_, _, source)| {
             if ignore_local_packages {
                 !source.starts_with("(path+file://")
@@ -89,7 +80,8 @@ fn build_deps(
 
     for pkg in pkgs {
         let mut command = Command::new("cargo");
-        command.current_dir(&pkg_cwd);
+        command.envs(env::vars());
+        command.current_dir(&target_cwd);
         command.arg("build");
         command.arg("-p");
         command.arg(&pkg);
@@ -99,7 +91,20 @@ fn build_deps(
         if let Some(features) = features {
             command.arg("--features").arg(features);
         }
-        execute_command(&mut command);
+
+        let _exit_status = command
+            .spawn()
+            .expect("failed to spawn process")
+            .wait()
+            .expect("failed to wait process");
+        // ignoring all errors as an experiment with the idea of ignoring "package not found" errors.
+        // In the next commit, if this works, i'll have to string match the output i guess.
+        //if !exit_status.success() {
+        //    match exit_status.code() {
+        //        Some(code) => panic!("Exited with status code: {}", code),
+        //        None => panic!("Process terminated by signal"),
+        //    }
+        //}
     }
 }
 
@@ -111,7 +116,7 @@ fn main() {
         .required(true)
         .takes_value(true)
     )
-    .arg(Arg::with_name("ignore-local-packages").long("ignore-local-packages"))
+    .arg(Arg::with_name("dont-ignore-local-packages").long("dont-ignore-local-packages"))
     .arg(Arg::with_name("release").long("release"))
     .arg(
       Arg::with_name("features")
@@ -143,7 +148,7 @@ fn main() {
 
     let package = matched_args.value_of("package").unwrap();
     let features = matched_args.value_of("features");
-    let ignore_local_packages = matched_args.is_present("ignore-local-packages");
+    let dont_ignore_local_packages = matched_args.is_present("dont-ignore-local-packages");
     let is_release = matched_args.is_present("release");
     let ignore_pkg = matched_args
         .values_of("ignore-pkg")
@@ -156,27 +161,11 @@ fn main() {
         .map_or_else(|| Vec::new(), |values| values.collect::<Vec<_>>());
     build_deps(
         package,
-        ignore_local_packages,
+        !dont_ignore_local_packages,
         is_release,
         features,
         ignore_pkg,
         ignore_pkg_vers,
         with_pkgs,
     );
-}
-
-fn execute_command(command: &mut Command) {
-    let mut child = command
-        .envs(env::vars())
-        .spawn()
-        .expect("failed to execute process");
-
-    let exit_status = child.wait().expect("failed to run command");
-
-    if !exit_status.success() {
-        match exit_status.code() {
-            Some(code) => panic!("Exited with status code: {}", code),
-            None => panic!("Process terminated by signal"),
-        }
-    }
 }
