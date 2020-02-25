@@ -79,6 +79,7 @@ fn build_deps(
     );
 
     for pkg in pkgs {
+        println!("compiling {}", pkg);
         let mut command = Command::new("cargo");
         command.envs(env::vars());
         command.current_dir(&target_cwd);
@@ -92,11 +93,11 @@ fn build_deps(
             command.arg("--features").arg(features);
         }
 
-        let _exit_status = command
+        let mut proc = command
+            .stderr(std::process::Stdio::null())
             .spawn()
-            .expect("failed to spawn process")
-            .wait()
-            .expect("failed to wait process");
+            .expect("failed to spawn process");
+        proc.wait().expect("failed to wait process");
         // ignoring all errors as an experiment with the idea of ignoring "package not found" errors.
         // In the next commit, if this works, i'll have to string match the output i guess.
         //if !exit_status.success() {
